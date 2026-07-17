@@ -1,0 +1,42 @@
+{
+  "name": "jarvis",
+  "version": "0.1.0",
+  "description": "JARVIS — AI voice assistant with Gmail, Drive, Calendar, and document automation",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "jarvis": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "better-sqlite3": "^11.0.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "chalk": "^5.3.0",
+    "dotenv": "^16.4.0",
+    "gray-matter": "^4.0.3",
+    "js-tiktoken": "^1.0.21",
+    "openai": "^4.85.4",
+    "ora": "^8.0.0",
+    "ulid": "^2.3.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.4.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}
