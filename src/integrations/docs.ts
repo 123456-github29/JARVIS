@@ -21,18 +21,20 @@ export interface CreateDocOptions {
   content: string;
 }
 
-export class DocsClient {
-  private accessToken: string;
+import type { TokenProvider } from "./google-auth.js";
 
-  constructor(accessToken: string) {
-    this.accessToken = accessToken;
+export class DocsClient {
+  private getToken: TokenProvider;
+
+  constructor(getToken: TokenProvider) {
+    this.getToken = getToken;
   }
 
-  private async driveRequest(endpoint: string, method = "GET", body?: unknown) {
+  private async driveRequest(endpoint: string, method = "GET", body?: unknown): Promise<any> {
     const res = await fetch(`https://www.googleapis.com/drive/v3${endpoint}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
+        Authorization: `Bearer ${await this.getToken()}`,
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -41,11 +43,11 @@ export class DocsClient {
     return res.json();
   }
 
-  private async docsRequest(endpoint: string, method = "GET", body?: unknown) {
+  private async docsRequest(endpoint: string, method = "GET", body?: unknown): Promise<any> {
     const res = await fetch(`https://docs.googleapis.com/v1${endpoint}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
+        Authorization: `Bearer ${await this.getToken()}`,
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,

@@ -2,127 +2,164 @@
 
 A personal AI assistant with voice, Gmail, Drive, Calendar, and document automation.
 
-Built on:
-- **Agent brain** — stripped from [Automaton](https://github.com/Conway-Research/automaton) (MIT)
-- **Voice layer** — from Toury (OpenAI Realtime API)
-- **Claude** — reasoning and tool use
-- **Google APIs** — Gmail, Drive, Calendar, Docs
+Runs entirely on **OpenAI** (text brain + Realtime voice), with a **Twilio**
+phone line and **Google APIs** for the tools. Deploys to **Railway**.
+
+Scaffold history: the agent loop was adapted from
+[Automaton](https://github.com/Conway-Research/automaton) (MIT) and the voice
+approach from Toury — these were reference sources, not runtime dependencies.
 
 ---
 
 ## What it can do
 
-- 📧 Draft, read, and reply to emails
+- 📧 Draft, read, send, and reply to emails (Gmail)
 - 💾 Save files and transcripts to Google Drive
 - 📅 Create and check calendar events
-- 📄 Fill document templates
-- 🧠 Remember things across sessions
-- 🎤 Work hands-free via voice (Toury integration)
+- 📄 Fill Google Doc templates / create docs
+- 🧠 Remember things across sessions (local SQLite)
+- 🎤 Answer a phone call and do all of the above by voice
+
+---
+
+## Architecture
+
+```
+Phone call ──▶ Twilio ──(Media Streams WS, μ-law)──▶ Railway server (src/server.ts)
+                                                          │
+                                                          ▼
+                                          OpenAI Realtime API (src/voice/index.ts)
+                                                          │  tool calls
+                                                          ▼
+                                          JARVIS tools (src/agent/tools.ts)
+                                                          ▼
+                                      Gmail · Drive · Calendar · Docs · Memory
+
+Text / REPL ──▶ OpenAI Chat Completions (src/agent/jarvis.ts) ──▶ same tools
+```
+
+Both the voice path and the text path share one set of tool definitions and
+one executor. Voice lets the Realtime model call tools directly (lowest
+latency); text uses Chat Completions function-calling.
 
 ---
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install
 
 ```bash
 npm install
-```
-
-### 2. Set up environment variables
-
-```bash
 cp .env.example .env
 ```
 
-Fill in:
-- `ANTHROPIC_API_KEY` — from [console.anthropic.com](https://console.anthropic.com)
-- `GOOGLE_ACCESS_TOKEN` — see Google OAuth setup below
-- `OPENAI_API_KEY` — only needed for voice mode
+### 2. OpenAI
 
-### 3. Google OAuth Setup
+Set `OPENAI_API_KEY` from [platform.openai.com](https://platform.openai.com).
+That single key powers both the text brain and the Realtime voice.
 
-You need a Google Cloud project with the following APIs enabled:
-- Gmail API
-- Google Drive API
-- Google Calendar API
-- Google Docs API
+### 3. Google OAuth (Gmail / Drive / Calendar / Docs)
 
-Then create OAuth2 credentials and get an access token:
+You need an access token with these scopes:
 
 ```
-1. Go to https://console.cloud.google.com
-2. Create a new project (or use an existing one)
-3. Enable the 4 APIs above
-4. Go to APIs & Services → Credentials → Create OAuth2 client
-5. Download the client JSON
-6. Run: npx google-auth-library-nodejs auth (or use the OAuth playground)
-7. Paste the access token in your .env
+https://www.googleapis.com/auth/gmail.modify
+https://www.googleapis.com/auth/drive
+https://www.googleapis.com/auth/calendar
+https://www.googleapis.com/auth/documents
 ```
 
-> For production: set up proper OAuth2 refresh token flow in src/setup/oauth.ts
+**Option A — quick token for testing (expires in ~1 hour)**
 
-### 4. Run
+1. Open the [OAuth 2.0 Playground](https://developers.google.com/oauthplayground).
+2. In "Step 1", paste the four scopes above → **Authorize APIs** → sign in → **Allow**.
+3. In "Step 2", click **Exchange authorization code for tokens**.
+4. Copy the **Access token** (`ya29...`) into `GOOGLE_ACCESS_TOKEN` in `.env`.
+
+**Option B — refresh token for production (long-lived; used by the phone server)**
+
+1. [Google Cloud Console](https://console.cloud.google.com) → **New Project**.
+2. **APIs & Services → Library** → enable *Gmail API, Google Drive API, Google
+   Calendar API, Google Docs API*.
+3. **OAuth consent screen** → External → add yourself as a **Test user** and add
+   the four scopes.
+4. **Credentials → Create Credentials → OAuth client ID** → *Web application* →
+   add redirect URI `https://developers.google.com/oauthplayground` → save the
+   **Client ID** and **Client secret**.
+5. Back in the Playground, click the **⚙ gear** → check **"Use your own OAuth
+   credentials"** → paste your client ID/secret → authorize the scopes →
+   exchange. You now get a **refresh token** too.
+6. Put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REFRESH_TOKEN`
+   in `.env`. When all three are set, the app refreshes access tokens
+   automatically and ignores `GOOGLE_ACCESS_TOKEN`.
+
+> ⚠️ While the consent screen is in **"Testing"** status, refresh tokens expire
+> after 7 days. Publish the app ("In production") for a permanent one.
+
+### 4. Run (text)
 
 ```bash
-# Text mode (REPL)
-npm run dev
-
-# One-shot command
-npm run dev -- --text "Draft an email to mom saying I'll call tonight"
-
-# Voice mode (Toury)
-npm run dev -- --voice
+npm run dev                                   # interactive REPL
+npm run dev -- --text "Draft an email to mom" # one-shot
 ```
 
 ---
 
-## Project Structure
+## Phone line (Twilio + Railway)
+
+### 1. Deploy the server
+
+Push this repo to Railway. It reads `railway.json` and starts
+`node dist/index.js --serve`. Set these env vars in Railway:
+
+- `OPENAI_API_KEY`
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` (Option B —
+  a 1-hour static token is no good for an always-on server)
+- `PUBLIC_HOST` — your Railway domain, e.g. `jarvis-production.up.railway.app`
+  (no protocol)
+
+Verify: `https://<PUBLIC_HOST>/health` returns `{"status":"ok"}`.
+
+### 2. Point Twilio at it
+
+In the [Twilio console](https://console.twilio.com), open your phone number and
+set **A call comes in** → **Webhook** → `https://<PUBLIC_HOST>/incoming-call`
+(HTTP POST). Call the number and JARVIS picks up.
+
+Locally you can expose the server with a tunnel (e.g. `ngrok http 8080`) and use
+the tunnel host as `PUBLIC_HOST`.
+
+---
+
+## Project structure
 
 ```
 src/
-  index.ts              Entry point + modes (text, voice)
+  index.ts                 Entry point + modes (--text, --serve, REPL)
+  config.ts                Env config loader/validation
+  server.ts                Fastify server: Twilio webhook + media-stream WS
   agent/
-    jarvis.ts           Core ReAct loop (Think → Act → Observe)
-    tools.ts            All JARVIS tool definitions + executor
-  integrations/
-    gmail.ts            Gmail API client
-    drive.ts            Google Drive API client
-    calendar.ts         Google Calendar API client
-    docs.ts             Google Docs API client
+    jarvis.ts              Text brain (OpenAI Chat Completions + tools)
+    tools.ts               Tool definitions + executor + schema formatters
+    tool-context.ts        Builds the live API clients from config
   voice/
-    index.ts            OpenAI Realtime API voice session (Toury)
-  memory/
-    store.ts            SQLite-backed memory store
-  observability/
-    logger.ts           Structured logging
-```
-
----
-
-## Adding Toury's Voice Code
-
-The `src/voice/index.ts` file has the skeleton for the OpenAI Realtime API session.
-Paste your existing Toury WebSocket/WebRTC code in there and wire it to the `JarvisAgent`.
-
-The interface is simple:
-```ts
-const session = createVoiceSession(config, agent);
-await session.start();
-session.sendAudio(audioBuffer); // feed audio chunks
-session.stop();
+    index.ts               Twilio ⇄ OpenAI Realtime bridge (voice + tool calls)
+  integrations/
+    google-auth.ts         Static / refresh-token providers
+    gmail.ts drive.ts calendar.ts docs.ts
+  memory/store.ts          SQLite-backed memory
+  observability/logger.ts  Structured logging
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] Proper Google OAuth2 refresh token flow
-- [ ] Web dashboard (Next.js) — see transcripts, docs, email history
-- [ ] Stripe subscription for public launch
-- [ ] Supabase for cloud memory sync across devices
-- [ ] Driving mode (Toury GPS integration)
-- [ ] Document template library
+- [ ] Web dashboard — transcripts, docs, email history
+- [ ] Stripe subscriptions for public launch
+- [ ] Supabase-backed memory (cloud sync across devices)
+- [ ] Multi-user auth + per-user Google tokens
+- [ ] Prompt-injection defense on email content
 
 ---
 

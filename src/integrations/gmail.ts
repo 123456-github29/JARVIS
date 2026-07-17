@@ -48,18 +48,20 @@ export interface ReplyOptions {
   body: string;
 }
 
-export class GmailClient {
-  private accessToken: string;
+import type { TokenProvider } from "./google-auth.js";
 
-  constructor(accessToken: string) {
-    this.accessToken = accessToken;
+export class GmailClient {
+  private getToken: TokenProvider;
+
+  constructor(getToken: TokenProvider) {
+    this.getToken = getToken;
   }
 
-  private async request(endpoint: string, method = "GET", body?: unknown) {
+  private async request(endpoint: string, method = "GET", body?: unknown): Promise<any> {
     const res = await fetch(`https://gmail.googleapis.com/gmail/v1${endpoint}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
+        Authorization: `Bearer ${await this.getToken()}`,
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,

@@ -23,20 +23,22 @@ export interface GetEventsOptions {
   daysAhead?: number;
 }
 
-export class CalendarClient {
-  private accessToken: string;
+import type { TokenProvider } from "./google-auth.js";
 
-  constructor(accessToken: string) {
-    this.accessToken = accessToken;
+export class CalendarClient {
+  private getToken: TokenProvider;
+
+  constructor(getToken: TokenProvider) {
+    this.getToken = getToken;
   }
 
-  private async request(endpoint: string, method = "GET", body?: unknown) {
+  private async request(endpoint: string, method = "GET", body?: unknown): Promise<any> {
     const res = await fetch(
       `https://www.googleapis.com/calendar/v3${endpoint}`,
       {
         method,
         headers: {
-          Authorization: `Bearer ${this.accessToken}`,
+          Authorization: `Bearer ${await this.getToken()}`,
           "Content-Type": "application/json",
         },
         body: body ? JSON.stringify(body) : undefined,

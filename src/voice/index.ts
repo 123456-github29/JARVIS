@@ -1,159 +1,244 @@
 /**
- * JARVIS Voice Layer
+ * JARVIS Voice Layer — Twilio ⇄ OpenAI Realtime bridge
  *
- * Powered by OpenAI Realtime API (same as Toury).
- * Handles voice in → transcript → agent → voice out loop.
+ * A phone call comes in over Twilio. Twilio opens a Media Streams WebSocket
+ * to our server and streams the caller's audio as base64 G.711 µ-law frames
+ * (8 kHz mono). We open a second WebSocket to the OpenAI Realtime API and
+ * pipe audio between the two.
  *
- * Based on Toury's existing voice infrastructure.
- * Drop your Toury voice session code here and wire it to the agent.
+ * Because the Realtime API can speak G.711 µ-law natively, we set both its
+ * input and output audio format to `g711_ulaw` and pass Twilio's payloads
+ * straight through — no resampling or transcoding required.
+ *
+ * The Realtime model handles voice-activity detection AND tool calling
+ * itself; when it decides to call a JARVIS tool we run it against the Google
+ * APIs and hand the result back into the session.
  */
 
 import WebSocket from "ws";
 import { createLogger } from "../observability/logger.js";
-import { JarvisAgent } from "../agent/jarvis.js";
+import {
+  executeTool,
+  formatToolsForRealtime,
+  type ToolContext,
+} from "../agent/tools.js";
+import { JARVIS_SYSTEM_PROMPT } from "../agent/jarvis.js";
 
 const logger = createLogger("voice");
 
-export interface VoiceSessionConfig {
+export interface RealtimeVoiceConfig {
   openaiApiKey: string;
-  systemPrompt: string;
+  model: string;
+  voice: string;
   onTranscript?: (text: string, role: "user" | "assistant") => void;
-  onToolCall?: (toolName: string, args: unknown) => void;
-}
-
-export interface VoiceSession {
-  start: () => Promise<void>;
-  stop: () => void;
-  sendAudio: (audioChunk: Buffer) => void;
-  isConnected: () => boolean;
 }
 
 /**
- * Creates a Realtime API voice session.
- *
- * This is the OpenAI Realtime API integration from Toury.
- * Replace the WebSocket handling here with your existing Toury code.
+ * Bridge a single Twilio Media Streams connection to a fresh OpenAI Realtime
+ * session. Call this once per inbound phone call.
  */
-export function createVoiceSession(
-  config: VoiceSessionConfig,
-  agent: JarvisAgent
-): VoiceSession {
-  let ws: WebSocket | null = null;
-  let connected = false;
+export function bridgeTwilioMediaStream(
+  twilioWs: WebSocket,
+  config: RealtimeVoiceConfig,
+  toolCtx: ToolContext
+): void {
+  let streamSid: string | null = null;
 
-  const REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01";
+  const openaiWs = new WebSocket(
+    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(config.model)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${config.openaiApiKey}`,
+        "OpenAI-Beta": "realtime=v1",
+      },
+    }
+  );
 
-  function start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      ws = new WebSocket(REALTIME_URL, {
-        headers: {
-          Authorization: `Bearer ${config.openaiApiKey}`,
-          "OpenAI-Beta": "realtime=v1",
-        },
-      });
+  // ─── OpenAI Realtime → us ───────────────────────────────────────
 
-      ws.on("open", () => {
-        logger.info("Realtime API connected");
-        connected = true;
-
-        // Configure the session
-        ws!.send(
-          JSON.stringify({
-            type: "session.update",
-            session: {
-              modalities: ["text", "audio"],
-              instructions: config.systemPrompt,
-              voice: "alloy",
-              input_audio_format: "pcm16",
-              output_audio_format: "pcm16",
-              input_audio_transcription: { model: "whisper-1" },
-              turn_detection: {
-                type: "server_vad",
-                threshold: 0.5,
-                prefix_padding_ms: 300,
-                silence_duration_ms: 500,
-              },
-              tools: [], // JARVIS tools are handled by the agent, not Realtime directly
-            },
-          })
-        );
-
-        resolve();
-      });
-
-      ws.on("message", async (raw) => {
-        const event = JSON.parse(raw.toString());
-        await handleRealtimeEvent(event, agent, config);
-      });
-
-      ws.on("error", (err) => {
-        logger.error("Realtime WS error", { error: err.message });
-        reject(err);
-      });
-
-      ws.on("close", () => {
-        logger.info("Realtime API disconnected");
-        connected = false;
-      });
-    });
-  }
-
-  function stop() {
-    ws?.close();
-    ws = null;
-    connected = false;
-  }
-
-  function sendAudio(audioChunk: Buffer) {
-    if (!ws || !connected) return;
-    ws.send(
+  openaiWs.on("open", () => {
+    logger.info("Realtime API connected");
+    openaiWs.send(
       JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: audioChunk.toString("base64"),
+        type: "session.update",
+        session: {
+          modalities: ["text", "audio"],
+          instructions: JARVIS_SYSTEM_PROMPT,
+          voice: config.voice,
+          input_audio_format: "g711_ulaw",
+          output_audio_format: "g711_ulaw",
+          input_audio_transcription: { model: "whisper-1" },
+          turn_detection: {
+            type: "server_vad",
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500,
+          },
+          tools: formatToolsForRealtime(),
+          tool_choice: "auto",
+        },
       })
     );
-  }
 
-  return { start, stop, sendAudio, isConnected: () => connected };
+    // Greet the caller first so they know JARVIS is listening.
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions:
+            "Greet the caller briefly as JARVIS and ask how you can help.",
+        },
+      })
+    );
+  });
+
+  openaiWs.on("message", async (raw) => {
+    let event: RealtimeEvent;
+    try {
+      event = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+
+    switch (event.type) {
+      // Model produced audio → forward to the caller via Twilio.
+      case "response.audio.delta": {
+        if (streamSid && event.delta) {
+          twilioWs.send(
+            JSON.stringify({
+              event: "media",
+              streamSid,
+              media: { payload: event.delta },
+            })
+          );
+        }
+        break;
+      }
+
+      // Caller started talking → interrupt any audio we're playing (barge-in).
+      case "input_audio_buffer.speech_started": {
+        if (streamSid) {
+          twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+        }
+        break;
+      }
+
+      // Transcripts (for logging / a future dashboard).
+      case "conversation.item.input_audio_transcription.completed": {
+        if (event.transcript) config.onTranscript?.(event.transcript, "user");
+        break;
+      }
+      case "response.audio_transcript.done": {
+        if (event.transcript) config.onTranscript?.(event.transcript, "assistant");
+        break;
+      }
+
+      // Model wants to call a JARVIS tool.
+      case "response.function_call_arguments.done": {
+        await handleFunctionCall(openaiWs, event, toolCtx);
+        break;
+      }
+
+      case "error": {
+        logger.error("Realtime API error", { error: event.error });
+        break;
+      }
+    }
+  });
+
+  openaiWs.on("close", () => {
+    logger.info("Realtime API disconnected");
+    twilioWs.close();
+  });
+  openaiWs.on("error", (err) => {
+    logger.error("Realtime WS error", { error: (err as Error).message });
+  });
+
+  // ─── Twilio → OpenAI Realtime ───────────────────────────────────
+
+  twilioWs.on("message", (raw) => {
+    let msg: TwilioMediaMessage;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+
+    switch (msg.event) {
+      case "start": {
+        streamSid = msg.start?.streamSid ?? null;
+        logger.info("Twilio media stream started", { streamSid });
+        break;
+      }
+      case "media": {
+        if (openaiWs.readyState === WebSocket.OPEN && msg.media?.payload) {
+          openaiWs.send(
+            JSON.stringify({
+              type: "input_audio_buffer.append",
+              audio: msg.media.payload,
+            })
+          );
+        }
+        break;
+      }
+      case "stop": {
+        logger.info("Twilio media stream stopped", { streamSid });
+        openaiWs.close();
+        break;
+      }
+    }
+  });
+
+  twilioWs.on("close", () => {
+    if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
+  });
 }
 
-// ─── Realtime Event Handler ───────────────────────────────────────
-
-async function handleRealtimeEvent(
-  event: { type: string; transcript?: string; delta?: { transcript?: string }; item?: { role?: string; content?: Array<{ transcript?: string }> } },
-  agent: JarvisAgent,
-  config: VoiceSessionConfig
-) {
-  switch (event.type) {
-
-    // User finished speaking — we have their transcript
-    case "conversation.item.input_audio_transcription.completed": {
-      const text = event.transcript ?? "";
-      logger.info(`User said: ${text}`);
-      config.onTranscript?.(text, "user");
-
-      // Send to JARVIS agent for reasoning + tool calls
-      const response = await agent.think(text);
-      config.onTranscript?.(response, "assistant");
-      break;
-    }
-
-    // Assistant is speaking (streaming)
-    case "response.audio_transcript.delta": {
-      // Streaming transcript delta — useful for UI
-      break;
-    }
-
-    // Assistant finished speaking
-    case "response.audio_transcript.done": {
-      const text = event.transcript ?? "";
-      logger.info(`JARVIS said: ${text}`);
-      break;
-    }
-
-    case "error": {
-      logger.error("Realtime API error", event);
-      break;
-    }
+async function handleFunctionCall(
+  openaiWs: WebSocket,
+  event: RealtimeEvent,
+  toolCtx: ToolContext
+): Promise<void> {
+  const name = event.name ?? "";
+  const callId = event.call_id ?? "";
+  let args: Record<string, unknown> = {};
+  try {
+    args = event.arguments ? JSON.parse(event.arguments) : {};
+  } catch {
+    /* leave args empty */
   }
+
+  logger.info(`Realtime tool call: ${name}`);
+  const result = await executeTool(name, args, toolCtx);
+
+  // Hand the result back and let the model continue speaking.
+  openaiWs.send(
+    JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: result.result,
+      },
+    })
+  );
+  openaiWs.send(JSON.stringify({ type: "response.create" }));
+}
+
+// ─── Minimal event shapes we read ─────────────────────────────────
+
+interface RealtimeEvent {
+  type: string;
+  delta?: string;
+  transcript?: string;
+  name?: string;
+  call_id?: string;
+  arguments?: string;
+  error?: unknown;
+}
+
+interface TwilioMediaMessage {
+  event: "connected" | "start" | "media" | "stop";
+  start?: { streamSid: string };
+  media?: { payload: string };
 }

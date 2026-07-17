@@ -5,7 +5,6 @@
  * JARVIS-specific ones: Gmail, Drive, Calendar, Docs, memory, and voice.
  */
 
-import type { ToolCallResult } from "../types.js";
 import { createLogger } from "../observability/logger.js";
 import { GmailClient } from "../integrations/gmail.js";
 import { DriveClient } from "../integrations/drive.js";
@@ -29,6 +28,12 @@ interface ToolParam {
   type: "string" | "number" | "boolean" | "array";
   description: string;
   required: boolean;
+}
+
+/** Result of executing a tool. */
+export interface ToolCallResult {
+  success: boolean;
+  result: string;
 }
 
 type ToolCategory = "email" | "drive" | "calendar" | "docs" | "memory" | "system";
@@ -427,23 +432,48 @@ export async function executeTool(
   }
 }
 
-// ─── Format tools for Claude API ──────────────────────────────────
+// ─── Tool schema formatting ───────────────────────────────────────
 
-export function formatToolsForClaude() {
+/** JSON Schema for a single tool's parameters. */
+function parametersSchema(tool: JarvisTool) {
+  return {
+    type: "object" as const,
+    properties: Object.fromEntries(
+      Object.entries(tool.parameters).map(([key, param]) => [
+        key,
+        { type: param.type, description: param.description },
+      ])
+    ),
+    required: Object.entries(tool.parameters)
+      .filter(([, p]) => p.required)
+      .map(([k]) => k),
+  };
+}
+
+/**
+ * Format tools for the OpenAI Chat Completions API (text brain).
+ * Shape: { type: "function", function: { name, description, parameters } }
+ */
+export function formatToolsForOpenAI() {
   return JARVIS_TOOLS.map((tool) => ({
+    type: "function" as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: parametersSchema(tool),
+    },
+  }));
+}
+
+/**
+ * Format tools for the OpenAI Realtime API (voice).
+ * Shape is flatter: { type: "function", name, description, parameters }
+ */
+export function formatToolsForRealtime() {
+  return JARVIS_TOOLS.map((tool) => ({
+    type: "function" as const,
     name: tool.name,
     description: tool.description,
-    input_schema: {
-      type: "object" as const,
-      properties: Object.fromEntries(
-        Object.entries(tool.parameters).map(([key, param]) => [
-          key,
-          { type: param.type, description: param.description },
-        ])
-      ),
-      required: Object.entries(tool.parameters)
-        .filter(([, p]) => p.required)
-        .map(([k]) => k),
-    },
+    parameters: parametersSchema(tool),
   }));
 }

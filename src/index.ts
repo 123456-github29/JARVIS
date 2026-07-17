@@ -1,66 +1,47 @@
 /**
  * JARVIS — Entry Point
  *
- * Boots the agent, connects to Google APIs, and starts listening
- * for voice or text input.
+ * Modes:
+ *   npm run dev                              → interactive REPL (text)
+ *   npm run dev -- --text "draft an email"   → one-shot text command
+ *   npm run dev -- --serve                   → phone server (Twilio + Realtime voice)
+ *   npm start                                → built version (respects the same flags)
  *
- * Usage:
- *   npm run dev          — run with hot reload
- *   npm start            — run built version
- *   node dist/index.js --text "Draft an email to mom"   — one-shot text mode
+ * Everything runs on OpenAI (text brain + Realtime voice). Google APIs power
+ * the tools; Twilio provides the phone line for --serve mode.
  */
 
-import "dotenv/config";
-import { GmailClient } from "./integrations/gmail.js";
-import { DriveClient } from "./integrations/drive.js";
-import { CalendarClient } from "./integrations/calendar.js";
-import { DocsClient } from "./integrations/docs.js";
-import { MemoryStore } from "./memory/store.js";
+import { loadConfig } from "./config.js";
+import { createToolContext } from "./agent/tool-context.js";
 import { JarvisAgent } from "./agent/jarvis.js";
-import type { ToolContext } from "./agent/tools.js";
 import readline from "readline";
 
-// ─── Config from .env ─────────────────────────────────────────────
-
-function requireEnv(key: string): string {
-  const val = process.env[key];
-  if (!val) {
-    console.error(`Missing required env variable: ${key}`);
-    console.error(`Copy .env.example to .env and fill it in.`);
-    process.exit(1);
-  }
-  return val;
-}
-
-const ANTHROPIC_API_KEY = requireEnv("ANTHROPIC_API_KEY");
-const GOOGLE_ACCESS_TOKEN = requireEnv("GOOGLE_ACCESS_TOKEN");
-
-// ─── Boot ────────────────────────────────────────────────────────
-
 async function main() {
-  console.log("⚡ JARVIS starting up...\n");
-
-  // Wire up all integrations
-  const toolContext: ToolContext = {
-    userId: "default",
-    gmail: new GmailClient(GOOGLE_ACCESS_TOKEN),
-    drive: new DriveClient(GOOGLE_ACCESS_TOKEN),
-    calendar: new CalendarClient(GOOGLE_ACCESS_TOKEN),
-    docs: new DocsClient(GOOGLE_ACCESS_TOKEN),
-    memory: new MemoryStore(),
-  };
-
-  const agent = new JarvisAgent(ANTHROPIC_API_KEY, toolContext);
-
   const args = process.argv.slice(2);
 
-  // ── One-shot text mode: jarvis --text "do something" ────────────
+  // ── Phone server mode ────────────────────────────────────────────
+  if (args.includes("--serve")) {
+    const { startServer } = await import("./server.js");
+    await startServer();
+    return;
+  }
 
+  console.log("⚡ JARVIS starting up...\n");
+
+  const config = loadConfig();
+  const toolContext = createToolContext(config);
+  const agent = new JarvisAgent({
+    apiKey: config.openaiApiKey,
+    model: config.textModel,
+    toolContext,
+  });
+
+  // ── One-shot text mode ───────────────────────────────────────────
   if (args.includes("--text")) {
     const idx = args.indexOf("--text");
     const input = args.slice(idx + 1).join(" ");
     if (!input) {
-      console.error('Usage: node dist/index.js --text "your command here"');
+      console.error('Usage: npm run dev -- --text "your command here"');
       process.exit(1);
     }
     console.log(`You: ${input}\n`);
@@ -70,69 +51,36 @@ async function main() {
     return;
   }
 
-  // ── Interactive text mode (REPL) ─────────────────────────────────
+  // ── Interactive REPL (default) ───────────────────────────────────
+  console.log("JARVIS interactive mode. Type your commands below.");
+  console.log("Type 'exit' to quit.\n");
 
-  if (args.includes("--repl") || args.length === 0) {
-    console.log("JARVIS interactive mode. Type your commands below.");
-    console.log("Type 'exit' to quit.\n");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    const ask = () => {
-      rl.question("You: ", async (input) => {
-        if (input.trim().toLowerCase() === "exit") {
-          console.log("\nGoodbye.");
-          toolContext.memory.close();
-          rl.close();
-          return;
-        }
-
-        if (!input.trim()) {
-          ask();
-          return;
-        }
-
-        const response = await agent.think(input.trim());
-        console.log(`\nJARVIS: ${response}\n`);
+  const ask = () => {
+    rl.question("You: ", async (input) => {
+      const trimmed = input.trim();
+      if (trimmed.toLowerCase() === "exit") {
+        console.log("\nGoodbye.");
+        toolContext.memory.close();
+        rl.close();
+        return;
+      }
+      if (!trimmed) {
         ask();
-      });
-    };
-
-    ask();
-    return;
-  }
-
-  // ── Voice mode: wire in Toury's voice layer ──────────────────────
-
-  if (args.includes("--voice")) {
-    const OPENAI_API_KEY = requireEnv("OPENAI_API_KEY");
-    const { createVoiceSession } = await import("./voice/index.js");
-
-    const session = createVoiceSession(
-      {
-        openaiApiKey: OPENAI_API_KEY,
-        systemPrompt:
-          "You are JARVIS, a voice assistant. Listen and respond naturally. Keep responses short for voice.",
-        onTranscript: (text, role) => {
-          console.log(`${role === "user" ? "You" : "JARVIS"}: ${text}`);
-        },
-      },
-      agent
-    );
-
-    console.log("Starting voice session...");
-    await session.start();
-    console.log("Voice ready. Speak now.\n");
-
-    process.on("SIGINT", () => {
-      session.stop();
-      toolContext.memory.close();
-      process.exit(0);
+        return;
+      }
+      try {
+        const response = await agent.think(trimmed);
+        console.log(`\nJARVIS: ${response}\n`);
+      } catch (err) {
+        console.error(`\nError: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      ask();
     });
-  }
+  };
+
+  ask();
 }
 
 main().catch((err) => {

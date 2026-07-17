@@ -22,14 +22,16 @@ export interface ListFilesOptions {
   count?: number;
 }
 
-export class DriveClient {
-  private accessToken: string;
+import type { TokenProvider } from "./google-auth.js";
 
-  constructor(accessToken: string) {
-    this.accessToken = accessToken;
+export class DriveClient {
+  private getToken: TokenProvider;
+
+  constructor(getToken: TokenProvider) {
+    this.getToken = getToken;
   }
 
-  private async request(endpoint: string, method = "GET", body?: unknown, isUpload = false) {
+  private async request(endpoint: string, method = "GET", body?: unknown, isUpload = false): Promise<any> {
     const base = isUpload
       ? "https://www.googleapis.com/upload/drive/v3"
       : "https://www.googleapis.com/drive/v3";
@@ -37,7 +39,7 @@ export class DriveClient {
     const res = await fetch(`${base}${endpoint}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
+        Authorization: `Bearer ${await this.getToken()}`,
         "Content-Type": isUpload ? "text/plain" : "application/json",
       },
       body: body ? (isUpload ? String(body) : JSON.stringify(body)) : undefined,
@@ -77,7 +79,7 @@ export class DriveClient {
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${this.accessToken}`,
+          Authorization: `Bearer ${await this.getToken()}`,
           "Content-Type": `multipart/related; boundary=${boundary}`,
         },
         body,
@@ -112,7 +114,7 @@ export class DriveClient {
     const res = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       {
-        headers: { Authorization: `Bearer ${this.accessToken}` },
+        headers: { Authorization: `Bearer ${await this.getToken()}` },
       }
     );
 
