@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: #000;
+  color: #f5f5f7;
+  font-feature-settings: "kern";
+}
+
+/* Thin, high-contrast selection to match the monochrome theme. */
+::selection {
+  background: #f5f5f7;
+  color: #000;
+}
+
+/* Subtle animated grain/gradient wash used behind the hero. */
+.aurora {
+  background:
+    radial-gradient(60% 50% at 50% 0%, rgba(41, 151, 255, 0.14) 0%, transparent 70%),
+    radial-gradient(40% 40% at 80% 20%, rgba(255, 255, 255, 0.06) 0%, transparent 70%),
+    #000;
+}
+
+.hairline {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Shimmering text used sparingly on the wordmark. */
+.shimmer-text {
+  background: linear-gradient(90deg, #8a8a8f 0%, #f5f5f7 20%, #8a8a8f 40%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .shimmer-text { animation: none; }
+}
