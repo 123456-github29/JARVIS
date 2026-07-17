@@ -15,9 +15,14 @@ JARVIS can act on their Gmail, Drive, Calendar, and Docs.
 |---|---|
 | `/` | Landing page (hero, features, connect CTA) |
 | `/login` | "Continue with Google" — requests Gmail/Drive/Calendar/Docs scopes |
-| `/auth/callback` | Exchanges the OAuth code, stores profile + encrypted Google tokens |
+| `/auth/callback` | Exchanges the OAuth code, then calls the Edge Function to store tokens |
 | `/dashboard` | Shows connected services; reconnect / sign out |
 | `/auth/signout` | POST — clears the session |
+
+Token storage (service-role writes + AES-256-GCM encryption) lives in the
+**`jarvis-store-connection` Supabase Edge Function** (`supabase/functions/` at
+the repo root), not in this app — so the web host holds **no secrets**, only the
+two public Supabase values.
 
 ## Local setup
 
@@ -28,10 +33,14 @@ cp .env.local.example .env.local   # fill in the two secrets below
 npm run dev                         # http://localhost:3000
 ```
 
-`.env.local` needs (URL + anon key are pre-filled):
+`.env.local` only needs the two public values (already pre-filled in the
+example). No service-role key or encryption key here — those live in the Edge
+Function. Set `APP_ENCRYPTION_KEY` as a Supabase Edge Function secret instead:
 
-- `SUPABASE_SERVICE_ROLE_KEY` — Supabase → Project Settings → API → `service_role`
-- `APP_ENCRYPTION_KEY` — `openssl rand -base64 32` (encrypts Google tokens at rest)
+```bash
+supabase secrets set APP_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+supabase functions deploy jarvis-store-connection
+```
 
 ## One-time configuration (outside this repo)
 

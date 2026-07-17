@@ -79,6 +79,18 @@ Save as `SUPABASE_SERVICE_ROLE_KEY`.
   - `http://localhost:3000/**`
   - `https://jarvis-xxxx.vercel.app/**`
 
+### 3d. Set the Edge Function secret
+Token storage runs in the **`jarvis-store-connection`** Edge Function (already
+deployed), which keeps the service-role key and encryption key inside Supabase
+instead of the web app. It needs one secret:
+
+- **Edge Functions → Secrets** (or CLI: `supabase secrets set ...`) → add
+  `APP_ENCRYPTION_KEY` = output of `openssl rand -base64 32`.
+
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-injected — don't set
+those. (Keep a copy of the encryption key; the phone backend will need the same
+value later to decrypt tokens.)
+
 ---
 
 ## Step 4 — Website on Vercel
@@ -87,20 +99,20 @@ In the **`jarvis`** Vercel project:
 
 1. **Settings → Build and Deployment → Root Directory** → set to `web` → Save.
    (This is why it was crashing — Vercel was building the backend, not the site.)
-2. **Settings → Environment Variables** → add:
+2. **Settings → Environment Variables** → add just these two public values.
+   No secrets live in the web app anymore — they're in the Edge Function (3d).
 
-   | Name | Value | Secret? |
-   |---|---|---|
-   | `NEXT_PUBLIC_SUPABASE_URL` | `https://iqfrjomoggddxwteuigk.supabase.co` | no |
-   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `sb_publishable_1mhtWKPAexk6-ycdAuR4sg_hdil-hlj` | no |
-   | `SUPABASE_SERVICE_ROLE_KEY` | *(from Step 3a)* | **yes** |
-   | `APP_ENCRYPTION_KEY` | run `openssl rand -base64 32` | **yes** |
+   | Name | Value |
+   |---|---|
+   | `NEXT_PUBLIC_SUPABASE_URL` | `https://iqfrjomoggddxwteuigk.supabase.co` |
+   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `sb_publishable_1mhtWKPAexk6-ycdAuR4sg_hdil-hlj` |
 
 3. **Deployments → latest → ⋯ → Redeploy.**
 
 ✅ The website is now live. Visit it, click **Continue with Google**, and you
-should land on `/dashboard` with your Google services shown as connected. This
-also writes your encrypted Google tokens into `jarvis-google-connections`.
+should land on `/dashboard` with your Google services shown as connected. The
+sign-in callback calls the Edge Function, which writes your encrypted Google
+tokens into `jarvis-google-connections`.
 
 ---
 
@@ -173,8 +185,11 @@ Call the number. JARVIS answers.
 
 ## Env var reference
 
-**Vercel (website):** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-`SUPABASE_SERVICE_ROLE_KEY`, `APP_ENCRYPTION_KEY`
+**Vercel (website):** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+*(both public — no secrets)*
+
+**Supabase Edge Function `jarvis-store-connection`:** `APP_ENCRYPTION_KEY`
+*(secret; `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are auto-injected)*
 
 **Railway (phone backend):** `OPENAI_API_KEY`, `GOOGLE_CLIENT_ID`,
 `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `TWILIO_ACCOUNT_SID`,

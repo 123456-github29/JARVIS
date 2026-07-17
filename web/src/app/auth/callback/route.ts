@@ -1,16 +1,16 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { encrypt } from "@/lib/crypto";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabase/config";
 import { GOOGLE_SCOPES } from "@/lib/google";
 
 /**
  * Google → Supabase OAuth callback.
  *
- * Exchanges the auth code for a session (setting cookies), then captures the
- * Google provider tokens — which Supabase only hands back this once — and
- * stores them, encrypted, via the service-role client. The browser never
- * sees the refresh token beyond the httpOnly session cookie.
+ * Exchanges the auth code for a session (setting cookies), then hands the
+ * Google provider tokens — which Supabase returns only this once — to the
+ * `jarvis-store-connection` Supabase Edge Function. That function holds the
+ * service-role key and encryption key, so no secrets live in this app: the
+ * web host only ever needs the public Supabase URL + anon key.
  */
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -29,38 +29,26 @@ export async function GET(request: Request) {
   }
 
   const { session } = data;
-  const user = session.user;
-  const meta = user.user_metadata ?? {};
-  const admin = createAdminClient();
 
-  // Upsert the JARVIS profile.
-  await admin.from("jarvis-profiles").upsert(
-    {
-      id: user.id,
-      email: user.email,
-      full_name: meta.full_name ?? meta.name ?? null,
-      avatar_url: meta.avatar_url ?? meta.picture ?? null,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "id" }
-  );
-
-  // Store the Google connection + tokens (encrypted at rest).
-  if (session.provider_refresh_token) {
-    await admin.from("jarvis-google-connections").upsert(
-      {
-        user_id: user.id,
-        google_email: user.email,
-        google_sub: (meta.sub as string) ?? (meta.provider_id as string) ?? null,
-        access_token: session.provider_token ? encrypt(session.provider_token) : null,
-        refresh_token: encrypt(session.provider_refresh_token),
-        scopes: GOOGLE_SCOPES,
-        token_expires_at: null,
-        connected_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+  // Persist profile + encrypted Google tokens via the Edge Function. The user's
+  // access token authorizes the call; the function verifies it server-side.
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/jarvis-store-connection`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: SUPABASE_ANON_KEY,
+        "Content-Type": "application/json",
       },
-      { onConflict: "user_id,google_email" }
-    );
+      body: JSON.stringify({
+        provider_token: session.provider_token,
+        provider_refresh_token: session.provider_refresh_token,
+        scopes: GOOGLE_SCOPES,
+      }),
+    });
+  } catch {
+    // Non-fatal: the user is signed in. They can hit "Reconnect" on the
+    // dashboard to retry storing their Google connection.
   }
 
   return NextResponse.redirect(`${origin}${next}`);
