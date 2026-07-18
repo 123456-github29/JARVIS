@@ -6,3 +6,6 @@ dist/
 *.db-wal
 ~/.jarvis/
 .DS_Store
+
+# JARVIS local secrets for scripts/push-secrets.sh
+scripts/secrets.env
