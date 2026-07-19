@@ -9,3 +9,6 @@ dist/
 
 # JARVIS local secrets for scripts/push-secrets.sh
 scripts/secrets.env
+
+# Supabase Edge Function secrets (local, filled-in)
+supabase/functions/.env
